@@ -11,9 +11,13 @@ import com.easypan.mappers.UserInfoMapper;
 import com.google.common.hash.BloomFilter;
 import com.mybatisflex.core.query.QueryWrapper;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
 import jakarta.annotation.Resource;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static com.easypan.entity.po.table.UserInfoTableDef.USER_INFO;
 
@@ -25,6 +29,35 @@ public class RedisComponent {
 
     @Resource
     private RedisUtils<Object> redisUtils;
+
+    /** Redis 原子操作模板，专用于配额数值与预留 Lua 脚本。 */
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    private static final DefaultRedisScript<String> RESERVE_TENANT_STORAGE_SCRIPT =
+            new DefaultRedisScript<>(
+                    "local used = redis.call('GET', KEYS[1]); "
+                            + "if not used then return -1 end; "
+                            + "local previous = tonumber(redis.call('HGET', KEYS[2], ARGV[1]) or '0'); "
+                            + "local reserved = tonumber(redis.call('HGET', KEYS[2], '_total') or '0'); "
+                            + "local delta = tonumber(ARGV[2]) - previous; "
+                            + "local next = reserved + delta; "
+                            + "if tonumber(used) + next > tonumber(ARGV[3]) then return -2 end; "
+                            + "redis.call('HSET', KEYS[2], ARGV[1], ARGV[2], '_total', tostring(next)); "
+                            + "redis.call('EXPIRE', KEYS[2], ARGV[4]); "
+                            + "return next",
+                    String.class);
+
+    private static final DefaultRedisScript<String> COMMIT_TENANT_STORAGE_SCRIPT =
+            new DefaultRedisScript<>(
+                    "local reserved = redis.call('HGET', KEYS[2], '_total'); "
+                            + "if not reserved then return -1 end; "
+                            + "local used = tonumber(redis.call('GET', KEYS[1]) or '0'); "
+                            + "local next = used + tonumber(reserved); "
+                            + "redis.call('SET', KEYS[1], tostring(next), 'EX', ARGV[1]); "
+                            + "redis.call('DEL', KEYS[2]); "
+                            + "return next",
+                    String.class);
 
     @Resource
     private UserInfoMapper userInfoMapper;
@@ -409,6 +442,15 @@ public class RedisComponent {
                 usedStorage, CacheTTL.WARM_DATA);
     }
 
+    /** 仅在缓存缺失时回填，避免并发初始化覆盖刚提交的计数。 */
+    public void initializeTenantUsedStorageIfAbsent(String tenantId, long usedStorage) {
+        String key = Constants.REDIS_KEY_TENANT_STORAGE + tenantId;
+        Boolean initialized = stringRedisTemplate.opsForValue().setIfAbsent(key, String.valueOf(usedStorage));
+        if (Boolean.TRUE.equals(initialized)) {
+            stringRedisTemplate.expire(key, CacheTTL.WARM_DATA, TimeUnit.SECONDS);
+        }
+    }
+
     /**
      * 增量更新租户已用存储空间.
      *
@@ -418,13 +460,57 @@ public class RedisComponent {
      */
     public Long incrementTenantUsedStorage(String tenantId, Long deltaSize) {
         String key = Constants.REDIS_KEY_TENANT_STORAGE + tenantId;
-        Long current = getTenantUsedStorage(tenantId);
-        if (current == null) {
+        try {
+            Long newValue = stringRedisTemplate.opsForValue().increment(key, deltaSize);
+            if (newValue != null) {
+                stringRedisTemplate.expire(key, CacheTTL.WARM_DATA, TimeUnit.SECONDS);
+            }
+            return newValue;
+        } catch (Exception e) {
+            // 旧缓存可能由 JSON 序列化写入，无法直接 INCRBY；让上层失效并回源数据库。
             return null;
         }
-        Long newValue = Math.max(0, current + deltaSize);
-        redisUtils.setex(key, newValue, CacheTTL.WARM_DATA);
-        return newValue;
+    }
+
+    /** 原子预留租户空间，返回 -1 表示缓存未初始化，-2 表示超额。 */
+    public Long reserveTenantStorage(String tenantId, String reservationId, String reservationPart,
+            long partSize, long quota) {
+        if (partSize < 0) {
+            return 0L;
+        }
+        String usedKey = Constants.REDIS_KEY_TENANT_STORAGE + tenantId;
+        String reservationKey = usedKey + ":reservation:" + reservationId;
+        try {
+            String result = stringRedisTemplate.execute(RESERVE_TENANT_STORAGE_SCRIPT,
+                    List.of(usedKey, reservationKey), reservationPart, String.valueOf(partSize),
+                    String.valueOf(quota), String.valueOf(CacheTTL.HOT_DATA));
+            return result == null ? null : Long.valueOf(result);
+        } catch (RuntimeException e) {
+            // 配额服务由上层决定是否回源/拒绝，不能把 Redis 异常伪装成成功预留。
+            return null;
+        }
+    }
+
+    /** 提交上传会话的租户空间预留。 */
+    public Long commitTenantStorageReservation(String tenantId, String reservationId) {
+        String usedKey = Constants.REDIS_KEY_TENANT_STORAGE + tenantId;
+        String reservationKey = usedKey + ":reservation:" + reservationId;
+        try {
+            String result = stringRedisTemplate.execute(COMMIT_TENANT_STORAGE_SCRIPT,
+                    List.of(usedKey, reservationKey), String.valueOf(CacheTTL.WARM_DATA));
+            return result == null ? null : Long.valueOf(result);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** 释放失败或中断上传留下的租户空间预留。 */
+    public void releaseTenantStorageReservation(String tenantId, String reservationId) {
+        try {
+            stringRedisTemplate.delete(Constants.REDIS_KEY_TENANT_STORAGE + tenantId + ":reservation:" + reservationId);
+        } catch (RuntimeException e) {
+            // 释放是清理动作，不能覆盖上传链路原始异常；预留键会按 TTL 自动过期。
+        }
     }
 
     /**

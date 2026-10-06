@@ -113,7 +113,7 @@ if (-not (Test-Path $envFile)) {
 
 $requiredEnvDefaults = @{
     "GRAFANA_ADMIN_USER" = "admin"
-    "GRAFANA_ADMIN_PASSWORD" = "ChangeThisLocalGrafanaPassword_123!"
+    "GRAFANA_ADMIN_PASSWORD" = ""
     "LOG_ROOT_LEVEL" = "info"
     "LOG_MAX_FILE_SIZE" = "50MB"
     "LOG_MAX_HISTORY" = "30"

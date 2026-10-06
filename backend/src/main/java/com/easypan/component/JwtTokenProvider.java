@@ -15,6 +15,7 @@ import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
+import jakarta.annotation.PostConstruct;
 import java.util.Date;
 import java.util.Map;
 
@@ -26,7 +27,7 @@ public class JwtTokenProvider {
 
     private static final Logger logger = LoggerFactory.getLogger(JwtTokenProvider.class);
 
-    @Value("${jwt.secret:defaultSecretKeyRequires256BitsMinimumLengthForHS256AlgorithmIsHere}")
+    @Value("${jwt.secret:}")
     private String jwtSecret;
 
     /**
@@ -44,6 +45,19 @@ public class JwtTokenProvider {
 
     @jakarta.annotation.Resource
     private JwtBlacklistService jwtBlacklistService;
+
+    /**
+     * JWT 密钥缺失或过短时立即失败，避免服务启动后才在登录请求中暴露配置错误。
+     */
+    @PostConstruct
+    void validateSecret() {
+        if (jwtSecret == null || jwtSecret.isBlank()) {
+            throw new IllegalStateException("JWT_SECRET 未配置，拒绝启动");
+        }
+        if (jwtSecret.getBytes(StandardCharsets.UTF_8).length < 32) {
+            throw new IllegalStateException("JWT_SECRET 长度至少需要 32 个字节");
+        }
+    }
 
     private SecretKey getSigningKey() {
         byte[] keyBytes = jwtSecret.getBytes(StandardCharsets.UTF_8);

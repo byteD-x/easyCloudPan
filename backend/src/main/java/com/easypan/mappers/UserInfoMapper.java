@@ -28,7 +28,14 @@ public interface UserInfoMapper extends BaseMapper<UserInfo> {
     Integer updateUserSpace(@Param("userId") String userId, @Param("useSpace") Long useSpace,
             @Param("totalSpace") Long totalSpace);
 
+    /** 原子增加用户已用空间，避免并发上传丢失更新或将总空间覆盖为 null。 */
+    @Update("UPDATE user_info SET use_space = COALESCE(use_space, 0) + #{deltaSize} WHERE user_id = #{userId}")
+    Integer incrementUseSpace(@Param("userId") String userId, @Param("deltaSize") Long deltaSize);
+
     @Select("SELECT * FROM user_info ORDER BY last_login_time DESC LIMIT #{limit}")
     List<UserInfo> selectActiveUsers(@Param("limit") int limit);
+
+    @Select("SELECT COUNT(1) FROM user_info WHERE tenant_id = #{tenantId}")
+    long countByTenantId(@Param("tenantId") String tenantId);
 
 }

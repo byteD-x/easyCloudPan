@@ -1,6 +1,7 @@
 package com.easypan.service.impl;
 
 import com.easypan.component.RedisComponent;
+import com.easypan.component.TenantContextHolder;
 import com.easypan.entity.config.AppConfig;
 import com.easypan.entity.constants.Constants;
 import com.easypan.entity.dto.SessionWebUserDto;
@@ -27,6 +28,7 @@ import com.easypan.service.MediaTranscodeService;
 import com.easypan.utils.DateUtil;
 import com.easypan.utils.QueryWrapperBuilder;
 import com.easypan.utils.StringTools;
+import com.easypan.utils.UploadPathValidator;
 import com.mybatisflex.core.query.QueryWrapper;
 import org.apache.commons.io.FileUtils;
 import org.slf4j.Logger;
@@ -45,16 +47,26 @@ import java.util.concurrent.CompletableFuture;
 
 import jakarta.annotation.Resource;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.security.DigestInputStream;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static com.easypan.entity.po.table.FileInfoTableDef.FILE_INFO;
 import static com.easypan.entity.po.table.UserInfoTableDef.USER_INFO;
@@ -265,6 +277,7 @@ public class FileInfoServiceImpl implements FileInfoService {
 
     @Override
     public Integer add(FileInfo bean) {
+        ensureTenant(bean);
         return this.fileInfoMapper.insert(bean);
     }
 
@@ -273,6 +286,7 @@ public class FileInfoServiceImpl implements FileInfoService {
         if (listBean == null || listBean.isEmpty()) {
             return 0;
         }
+        listBean.forEach(this::ensureTenant);
         return this.fileInfoMapper.insertBatch(listBean);
     }
 
@@ -281,7 +295,14 @@ public class FileInfoServiceImpl implements FileInfoService {
         if (listBean == null || listBean.isEmpty()) {
             return 0;
         }
+        listBean.forEach(this::ensureTenant);
         return this.fileInfoMapper.insertOrUpdateBatch(listBean);
+    }
+
+    private void ensureTenant(FileInfo fileInfo) {
+        if (fileInfo != null && StringTools.isEmpty(fileInfo.getTenantId())) {
+            fileInfo.setTenantId(TenantContextHolder.getTenantId());
+        }
     }
 
     @Resource
@@ -318,8 +339,6 @@ public class FileInfoServiceImpl implements FileInfoService {
             throw new BusinessException("当前上传请求过多，请稍后重试");
         }
 
-        tenantQuotaService.checkStorageQuota(file.getSize());
-
         File tempFileFolder = null;
         Boolean uploadSuccess = true;
         try {
@@ -349,6 +368,8 @@ public class FileInfoServiceImpl implements FileInfoService {
             if (StringTools.isEmpty(fileId)) {
                 fileId = StringTools.getRandomString(Constants.LENGTH_10);
             }
+            UploadPathValidator.validateFileId(fileId);
+            String reservationId = buildStorageReservationId(webUserDto.getUserId(), fileId);
             resultDto.setFileId(fileId);
             final Date curDate = new Date();
             UserSpaceDto spaceDto = redisComponent.getUserSpaceUse(webUserDto.getUserId());
@@ -369,30 +390,40 @@ public class FileInfoServiceImpl implements FileInfoService {
                         throw new BusinessException(ResponseCodeEnum.CODE_904);
                     }
 
-                    if (dbFile != null) {
+                    if (dbFile != null && canReuseForInstantUpload(webUserDto.getUserId(), file, fileMd5, dbFile)) {
+                        // 秒传按完整对象大小校验租户配额，不能只校验客户端提交的首片大小。
+                        tenantQuotaService.reserveStorageQuota(reservationId, "instant", dbFileSize);
                         return fileInfoService.processInstantUpload(webUserDto, fileId, filePid, fileMd5, fileName,
                                 dbFile, dbFileSize);
                     }
                 }
             }
 
-            String tempFolderName = appConfig.getProjectFolder() + Constants.FILE_FOLDER_TEMP;
             String currentUserFolderName = webUserDto.getUserId() + fileId;
-            tempFileFolder = new File(tempFolderName + currentUserFolderName);
+            tempFileFolder = UploadPathValidator.resolveTempFolder(appConfig.getProjectFolder(),
+                    webUserDto.getUserId(), fileId).toFile();
             if (!tempFileFolder.exists() && !tempFileFolder.mkdirs()) {
                 logger.error("Failed to create temp folder: {}", tempFileFolder.getAbsolutePath());
                 throw new BusinessException("创建临时目录失败");
             }
 
             Long currentTempSize = redisComponent.getFileTempSize(webUserDto.getUserId(), fileId);
-            if (file.getSize() + currentTempSize + spaceDto.getUseSpace() > spaceDto.getTotalSpace()) {
-                throw new BusinessException(ResponseCodeEnum.CODE_904);
+            if (currentTempSize == null) {
+                currentTempSize = 0L;
             }
 
             File newFile = new File(tempFileFolder.getPath() + "/" + chunkIndex);
+            boolean chunkAlreadyStored = newFile.exists() && newFile.length() == file.getSize();
+            long additionalSize = chunkAlreadyStored ? 0L : file.getSize();
+
+            if (additionalSize + currentTempSize + spaceDto.getUseSpace() > spaceDto.getTotalSpace()) {
+                throw new BusinessException(ResponseCodeEnum.CODE_904);
+            }
+            // 只预留本次新增分片，Redis Lua 会把同一会话累计预留量与其他并发上传原子比较。
+            tenantQuotaService.reserveStorageQuota(reservationId, "chunk:" + chunkIndex, additionalSize);
 
             // 文件写入是 IO 操作，不放在事务中执行。
-            if (!(newFile.exists() && newFile.length() == file.getSize())) {
+            if (!chunkAlreadyStored) {
                 file.transferTo(newFile);
                 if (newFile.length() != file.getSize()) {
                     throw new BusinessException("分片大小校验失败，请重试上传");
@@ -421,6 +452,9 @@ public class FileInfoServiceImpl implements FileInfoService {
             throw new BusinessException("文件上传失败");
         } finally {
             uploadRateLimiter.release(webUserDto.getUserId());
+            if (!uploadSuccess) {
+                tenantQuotaService.releaseStorageReservation(buildStorageReservationId(webUserDto.getUserId(), fileId));
+            }
             if (tempFileFolder != null && !uploadSuccess) {
                 try {
                     FileUtils.deleteDirectory(tempFileFolder);
@@ -444,6 +478,7 @@ public class FileInfoServiceImpl implements FileInfoService {
         dbFile.setFileId(fileId);
         dbFile.setFilePid(filePid);
         dbFile.setUserId(webUserDto.getUserId());
+        dbFile.setTenantId(TenantContextHolder.getTenantId());
         dbFile.setFileMd5(null);
         dbFile.setCreateTime(curDate);
         dbFile.setLastUpdateTime(curDate);
@@ -455,10 +490,46 @@ public class FileInfoServiceImpl implements FileInfoService {
         this.fileInfoMapper.insert(dbFile);
         resultDto.setStatus(UploadStatusEnums.UPLOAD_SECONDS.getCode());
         updateUserSpace(webUserDto, dbFileSize);
+        registerStorageReservationCommit(buildStorageReservationId(webUserDto.getUserId(), fileId));
 
         logger.info("秒传成功: userId={}, fileId={}, fileName={}, md5={}",
                 webUserDto.getUserId(), fileId, fileName, fileMd5);
         return resultDto;
+    }
+
+    /**
+     * 校验秒传的持有证明。当前用户自己的文件可以直接复用；跨用户复用必须提交与源对象前缀一致的首片，
+     * 不能仅凭客户端声明的 MD5 获得另一个用户的对象引用。
+     */
+    private boolean canReuseForInstantUpload(String userId, MultipartFile firstChunk, String requestedMd5,
+            FileInfo sourceFile) {
+        if (sourceFile.getFilePath() == null || StringTools.isEmpty(sourceFile.getFileMd5())
+                || !sourceFile.getFileMd5().equalsIgnoreCase(requestedMd5)) {
+            return false;
+        }
+        String sourceTenantId = sourceFile.getTenantId();
+        if (sourceTenantId == null || sourceTenantId.isBlank()) {
+            // V5 migration 为历史记录提供了 default；对迁移前/测试中的 null 做同样的兼容归一化。
+            sourceTenantId = "default";
+        }
+        if (!TenantContextHolder.getTenantId().equals(sourceTenantId)) {
+            return false;
+        }
+        if (userId.equals(sourceFile.getUserId())) {
+            return true;
+        }
+        if (firstChunk == null || storageStrategy == null) {
+            return false;
+        }
+
+        try (InputStream source = storageStrategy.download(sourceFile.getFilePath())) {
+            byte[] expectedPrefix = firstChunk.getBytes();
+            byte[] actualPrefix = source.readNBytes(expectedPrefix.length);
+            return actualPrefix.length == expectedPrefix.length && MessageDigest.isEqual(actualPrefix, expectedPrefix);
+        } catch (IOException | RuntimeException e) {
+            logger.warn("跨用户秒传持有证明校验失败: sourceFileId={}, userId={}", sourceFile.getFileId(), userId);
+            return false;
+        }
     }
 
     /**
@@ -474,6 +545,7 @@ public class FileInfoServiceImpl implements FileInfoService {
         FileInfo fileInfo = new FileInfo();
         fileInfo.setFileId(fileId);
         fileInfo.setUserId(webUserDto.getUserId());
+        fileInfo.setTenantId(TenantContextHolder.getTenantId());
         fileInfo.setFileMd5(fileMd5);
         fileInfo.setFileName(fileName);
         String fileSuffix = StringTools.getFileSuffix(fileName);
@@ -495,8 +567,10 @@ public class FileInfoServiceImpl implements FileInfoService {
             redisComponent.addFileMd5ToBloom(fileMd5);
         }
 
-        Long totalSize = redisComponent.getFileTempSize(webUserDto.getUserId(), fileId);
+        // Redis 临时计数可能过期或因并发重试短暂失准；配额/用户空间以磁盘上的实际分片字节数为准。
+        Long totalSize = calculateTempUploadSize(webUserDto.getUserId(), fileId);
         updateUserSpace(webUserDto, totalSize);
+        registerStorageReservationCommit(buildStorageReservationId(webUserDto.getUserId(), fileId));
         // 上传完成后清除进度
         uploadProgressService.clearProgress(webUserDto.getUserId(), fileId);
 
@@ -504,19 +578,78 @@ public class FileInfoServiceImpl implements FileInfoService {
 
         logger.info("文件元数据保存完成: userId={}, fileId={}", webUserDto.getUserId(), fileId);
 
-        // 使用事务同步机制，在事务提交后触发转码。
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                fileInfoService.transferFile(fileInfo.getFileId(), webUserDto);
-            }
-        });
+        // 使用事务同步机制，在事务提交后触发转码。单元测试或非 Spring 调用没有事务时，
+        // 直接触发，避免 TransactionSynchronizationManager 抛出 "synchronization is not active"。
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    fileInfoService.transferFile(fileInfo.getFileId(), webUserDto);
+                }
+            });
+        } else {
+            logger.warn("上传完成时没有活动事务，直接触发转码: fileId={}", fileInfo.getFileId());
+            fileInfoService.transferFile(fileInfo.getFileId(), webUserDto);
+        }
 
         return resultDto;
     }
 
+    /** 在元数据事务提交后提交租户空间预留，事务回滚时由上传 finally 释放。 */
+    private void registerStorageReservationCommit(String reservationId) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    tenantQuotaService.commitStorageReservation(reservationId);
+                }
+            });
+        } else {
+            tenantQuotaService.commitStorageReservation(reservationId);
+        }
+    }
+
+    /** 将用户绑定到预留键，避免同一租户中恶意复用 fileId 互相覆盖预留。 */
+    private String buildStorageReservationId(String userId, String fileId) {
+        return userId + ":" + fileId;
+    }
+
+    /** 删除事务提交后再失效租户缓存，避免其他请求在旧数据库快照上重建过期计数。 */
+    private void registerTenantStorageInvalidation() {
+        String tenantId = TenantContextHolder.getTenantId();
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    tenantQuotaService.invalidateUsedStorage(tenantId);
+                }
+            });
+        } else {
+            tenantQuotaService.invalidateUsedStorage(tenantId);
+        }
+    }
+
+    private long calculateTempUploadSize(String userId, String fileId) {
+        Path tempFolder = UploadPathValidator.resolveTempFolder(appConfig.getProjectFolder(), userId, fileId);
+        long totalSize = 0L;
+        try (Stream<Path> chunks = Files.list(tempFolder)) {
+            for (Path chunk : chunks.toList()) {
+                if (!chunk.getFileName().toString().matches("\\d+")
+                        || !Files.isRegularFile(chunk, LinkOption.NOFOLLOW_LINKS)) {
+                    throw new BusinessException("发现非法分片文件");
+                }
+                totalSize = Math.addExact(totalSize, Files.size(chunk));
+            }
+            return totalSize;
+        } catch (IOException | UncheckedIOException e) {
+            throw new BusinessException("读取上传分片大小失败");
+        } catch (ArithmeticException e) {
+            throw new BusinessException("上传文件大小超出支持范围");
+        }
+    }
+
     private void updateUserSpace(SessionWebUserDto webUserDto, Long totalSize) {
-        Integer count = userInfoMapper.updateUserSpace(webUserDto.getUserId(), totalSize, null);
+        Integer count = userInfoMapper.incrementUseSpace(webUserDto.getUserId(), totalSize);
         if (count == 0) {
             throw new BusinessException(ResponseCodeEnum.CODE_904);
         }
@@ -618,11 +751,23 @@ public class FileInfoServiceImpl implements FileInfoService {
             FileInfo updateInfo = new FileInfo();
             File targetFile = targetFilePath != null ? new File(targetFilePath) : null;
             updateInfo.setFileSize(targetFile != null && targetFile.exists() ? targetFile.length() : 0L);
+            if (transferSuccess && targetFile != null && targetFile.exists()) {
+                try {
+                    updateInfo.setFileMd5(calculateFileMd5(targetFile));
+                } catch (IOException e) {
+                    logger.warn("计算文件 MD5 失败，保留原上传摘要: fileId={}", fileId, e);
+                }
+            }
             updateInfo.setFileCover(cover);
             updateInfo.setStatus(
                     transferSuccess ? FileStatusEnums.USING.getStatus() : FileStatusEnums.TRANSFER_FAIL.getStatus());
             fileInfoMapper.updateFileStatusWithOldStatus(fileId, webUserDto.getUserId(), updateInfo,
                     FileStatusEnums.TRANSFER.getStatus());
+            try {
+                tenantQuotaService.invalidateUsedStorage(fileInfo == null ? null : fileInfo.getTenantId());
+            } catch (RuntimeException e) {
+                logger.warn("转码后清理租户空间缓存失败: fileId={}", fileId, e);
+            }
 
             // transferFile() 通过 MultiLevelCacheService（L1/L2）读取 FileInfo，
             // 这里必须主动失效缓存，避免“转码中”状态在缓存中滞留。
@@ -657,7 +802,22 @@ public class FileInfoServiceImpl implements FileInfoService {
             throw new BusinessException("未找到分片文件");
         }
 
-        Arrays.sort(chunks, Comparator.comparing(File::getName));
+        // 分片文件名是数字序号；不能按字符串排序，否则 10、11 会排在 2 前面，造成文件内容损坏。
+        Set<Long> chunkIndexes = new HashSet<>();
+        for (File chunk : chunks) {
+            if (!chunk.isFile() || !chunk.getName().matches("\\d+")) {
+                throw new BusinessException("发现非法分片文件");
+            }
+            try {
+                if (!chunkIndexes.add(Long.parseLong(chunk.getName()))) {
+                    throw new BusinessException("分片序号重复");
+                }
+            } catch (NumberFormatException e) {
+                throw new BusinessException("分片序号超出范围");
+            }
+        }
+        Arrays.sort(chunks, Comparator.comparingLong((File chunk) -> Long.parseLong(chunk.getName()))
+                .thenComparing(File::getName));
 
         java.nio.file.Path targetPath = java.nio.file.Paths.get(toFilePath);
         try (java.nio.channels.FileChannel outChannel = java.nio.channels.FileChannel.open(
@@ -698,6 +858,21 @@ public class FileInfoServiceImpl implements FileInfoService {
                     logger.error("删除临时目录失败: {}", dir.getPath(), e);
                 }
             }
+        }
+    }
+
+    /**
+     * 在服务端对合并后的完整文件计算摘要，避免把客户端声明的 MD5 当成可信内容身份。
+     */
+    private String calculateFileMd5(File file) throws IOException {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("MD5");
+            try (InputStream input = new DigestInputStream(new FileInputStream(file), digest)) {
+                input.transferTo(java.io.OutputStream.nullOutputStream());
+            }
+            return java.util.HexFormat.of().formatHex(digest.digest());
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("JDK 不支持 MD5", e);
         }
     }
 
@@ -773,6 +948,7 @@ public class FileInfoServiceImpl implements FileInfoService {
         FileInfo fileInfo = new FileInfo();
         fileInfo.setFileId(StringTools.getRandomString(Constants.LENGTH_10));
         fileInfo.setUserId(userId);
+        fileInfo.setTenantId(TenantContextHolder.getTenantId());
         fileInfo.setFilePid(filePid);
         fileInfo.setFileName(folderName);
         fileInfo.setFolderType(FileFolderTypeEnums.FOLDER.getType());
@@ -1019,6 +1195,7 @@ public class FileInfoServiceImpl implements FileInfoService {
             userSpaceDto.setUseSpace(useSpace);
             redisComponent.saveUserSpaceUse(userId, userSpaceDto);
         }
+        registerTenantStorageInvalidation();
 
         List<String> filePathList = new ArrayList<>();
         java.util.Set<String> dirPathSet = new java.util.HashSet<>();
@@ -1040,12 +1217,17 @@ public class FileInfoServiceImpl implements FileInfoService {
             }
 
             if (FileFolderTypeEnums.FILE.getType().equals(item.getFolderType()) && item.getFilePath() != null) {
-                filePathList.add(item.getFilePath());
-                if (!StringTools.isEmpty(item.getFileCover())) {
+                // 秒传/转存可能让多条元数据共享同一个物理对象；只有最后一个引用删除后才允许清理。
+                if (!hasRemainingStoredReference(item.getFilePath())) {
+                    filePathList.add(item.getFilePath());
+                }
+                if (!StringTools.isEmpty(item.getFileCover())
+                        && !hasRemainingStoredReference(item.getFileCover())) {
                     filePathList.add(item.getFileCover());
                 }
                 if (item.getFileType() != null && FileTypeEnums.VIDEO.getType().equals(item.getFileType())
-                        && item.getFilePath().contains(".")) {
+                        && item.getFilePath().contains(".")
+                        && !hasRemainingStoredReference(item.getFilePath())) {
                     dirPathSet.add(item.getFilePath().substring(0, item.getFilePath().lastIndexOf(".")));
                 }
             }
@@ -1056,13 +1238,19 @@ public class FileInfoServiceImpl implements FileInfoService {
             final java.util.Set<String> dirsToDelete = dirPathSet;
             CompletableFuture.runAsync(() -> {
                 try {
-                    if (!pathsToDelete.isEmpty()) {
-                        storageStrategy.deleteBatch(pathsToDelete);
+                    // 删除在事务提交后异步执行；再次回源检查，降低“检查后又创建引用”导致误删共享对象的窗口。
+                    List<String> safePaths = pathsToDelete.stream()
+                            .filter(path -> !hasRemainingStoredReference(path))
+                            .toList();
+                    if (!safePaths.isEmpty()) {
+                        storageStrategy.deleteBatch(safePaths);
                     }
                     if (!dirsToDelete.isEmpty()) {
                         for (String dir : dirsToDelete) {
                             try {
-                                storageStrategy.deleteDirectory(dir);
+                                if (!hasRemainingStoredReferencePrefix(dir)) {
+                                    storageStrategy.deleteDirectory(dir);
+                                }
                             } catch (Exception e) {
                                 logger.warn("批量删除存储目录失败: {}", dir, e);
                             }
@@ -1072,6 +1260,28 @@ public class FileInfoServiceImpl implements FileInfoService {
                     logger.warn("批量删除存储文件失败", e);
                 }
             }, virtualThreadExecutor);
+        }
+    }
+
+    /**
+     * 删除物理对象前查询数据库中是否仍有其他元数据记录引用它。
+     * 查询失败时采取保守策略，宁可暂不删除，也不冒险删除共享对象。
+     */
+    private boolean hasRemainingStoredReference(String storedPath) {
+        try {
+            return fileInfoMapper.countReferencesByStoredPath(storedPath) > 0;
+        } catch (RuntimeException e) {
+            logger.error("查询物理对象引用失败，跳过删除: path={}", storedPath, e);
+            return true;
+        }
+    }
+
+    private boolean hasRemainingStoredReferencePrefix(String pathPrefix) {
+        try {
+            return fileInfoMapper.countReferencesByStoredPathPrefix(pathPrefix) > 0;
+        } catch (RuntimeException e) {
+            logger.error("查询物理目录引用失败，跳过删除: pathPrefix={}", pathPrefix, e);
+            return true;
         }
     }
 
@@ -1200,6 +1410,7 @@ public class FileInfoServiceImpl implements FileInfoService {
         FileInfo info = new FileInfo();
         info.setFileId(newId);
         info.setUserId(userId);
+        info.setTenantId(TenantContextHolder.getTenantId());
         info.setFileMd5(source.getFileMd5());
         info.setFilePid(newPid);
         info.setFileSize(source.getFileSize());

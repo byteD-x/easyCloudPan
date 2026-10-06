@@ -254,7 +254,8 @@ public class CommonFileController extends ABaseController {
         String presignedUrl = storageFactory.getStorageStrategy().generatePresignedUrl(fileInfo.getFilePath(),
                 fileInfo.getFileName());
         if (presignedUrl != null) {
-            log.info("生成预签名直连下载链接成功: fileId={}, url={}", fileId, presignedUrl);
+            // 预签名 URL 本身是短期 bearer 凭证，禁止写入普通应用日志。
+            log.info("生成预签名直连下载链接成功: fileId={}", fileId);
             return getSuccessResponseVO(presignedUrl);
         }
 

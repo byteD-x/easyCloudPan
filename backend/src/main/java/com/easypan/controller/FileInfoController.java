@@ -19,6 +19,7 @@ import com.easypan.exception.BusinessException;
 import com.easypan.service.FileOperationService;
 import com.easypan.utils.CopyTools;
 import com.easypan.utils.StringTools;
+import com.easypan.utils.UploadPathValidator;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -174,6 +175,9 @@ public class FileInfoController extends CommonFileController {
             @VerifyParam(required = true) Integer chunks) {
 
         SessionWebUserDto webUserDto = getUserInfoFromSession(session);
+        if (!StringTools.isEmpty(fileId)) {
+            UploadPathValidator.validateFileId(fileId);
+        }
         UploadResultDto resultDto = fileInfoService.uploadFile(webUserDto, fileId, file, fileName, filePid, fileMd5,
                 chunkIndex, chunks);
         return getSuccessResponseVO(resultDto);
@@ -197,11 +201,7 @@ public class FileInfoController extends CommonFileController {
         SessionWebUserDto webUserDto = getUserInfoFromSession(session);
         String userId = webUserDto.getUserId();
 
-        String tempFolder = appConfig.getProjectFolder()
-                + Constants.FILE_FOLDER_TEMP
-                + userId + fileId;
-
-        File folder = new File(tempFolder);
+        File folder = UploadPathValidator.resolveTempFolder(appConfig.getProjectFolder(), userId, fileId).toFile();
         if (!folder.exists() || !folder.isDirectory()) {
             return getSuccessResponseVO(Collections.emptyList());
         }

@@ -19,10 +19,14 @@ docker compose version
 copy ops\docker\.env.example ops\docker\.env
 ```
 
+编辑 `ops\docker\.env` 后再部署：为 `POSTGRES_PASSWORD`、`REDIS_PASSWORD`、`MINIO_ROOT_PASSWORD`、`JWT_SECRET`、`JASYPT_ENCRYPTOR_PASSWORD` 和 `GRAFANA_ADMIN_PASSWORD` 分别填入不同的随机密钥。可使用 `openssl rand -hex 32` 生成；`JWT_SECRET` 至少需要 32 字节。模板中的敏感值留空，未配置时 Compose 会拒绝启动，避免使用公开的示例凭据。
+
 常见可配置项：
 - `POSTGRES_PASSWORD`
 - `REDIS_PASSWORD`
 - `MINIO_ROOT_PASSWORD`
+- `JASYPT_ENCRYPTOR_PASSWORD`
+- `GRAFANA_ADMIN_PASSWORD`
 - `QQ_APP_ID` / `QQ_APP_KEY`
 - `SPRING_MAIL_PASSWORD`
 

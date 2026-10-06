@@ -14,6 +14,8 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 /**
  * 本地存储策略实现类.
@@ -131,7 +133,11 @@ public class LocalStorageStrategy implements StorageStrategy {
         while (normalizedPath.startsWith("/")) {
             normalizedPath = normalizedPath.substring(1);
         }
-        // 可在此补充目录穿越防护的路径校验逻辑
-        return appConfig.getFileRootPath() + "/" + normalizedPath;
+        Path root = Paths.get(appConfig.getFileRootPath()).toAbsolutePath().normalize();
+        Path candidate = root.resolve(normalizedPath).normalize();
+        if (!candidate.startsWith(root)) {
+            throw new BusinessException("非法的存储路径");
+        }
+        return candidate.toString();
     }
 }

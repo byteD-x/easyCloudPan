@@ -3,9 +3,12 @@ $null = Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
 . (Join-Path $PSScriptRoot "_easypan_api.ps1")
 
 $BaseUrl = "http://localhost:7090/api"
-$Email = "2041487752@qq.com"
-$Password = "dxj20030310!"
-$TenantId = "default"
+$Email = $env:EASYPAN_EMAIL
+$Password = $env:EASYPAN_PASSWORD
+$TenantId = if ([string]::IsNullOrWhiteSpace($env:EASYPAN_TENANT_ID)) { "default" } else { $env:EASYPAN_TENANT_ID }
+if ([string]::IsNullOrWhiteSpace($Email) -or [string]::IsNullOrWhiteSpace($Password)) {
+    throw "请先设置 EASYPAN_EMAIL 和 EASYPAN_PASSWORD 环境变量"
+}
 
 $session = New-EasyPanSession
 $login = Invoke-EasyPanLogin -BaseUrl $BaseUrl -Session $session -Email $Email -Password $Password -TenantId $TenantId

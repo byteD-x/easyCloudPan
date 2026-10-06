@@ -106,6 +106,6 @@ class FileInfoUploadFileFallbackTest {
                 // immediately.
                 verify(fileInfoMapper, never()).insert(any(FileInfo.class));
                 verify(uploadRateLimiter).release(userId);
-                verify(tenantQuotaService).checkStorageQuota(anyLong());
+                verify(tenantQuotaService).reserveStorageQuota(eq(userId + ":" + fileId), eq("chunk:0"), anyLong());
         }
 }

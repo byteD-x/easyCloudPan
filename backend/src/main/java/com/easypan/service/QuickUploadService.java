@@ -1,6 +1,7 @@
 package com.easypan.service;
 
 import com.easypan.entity.dto.UploadResultDto;
+import com.easypan.component.TenantContextHolder;
 import com.easypan.entity.enums.FileDelFlagEnums;
 import com.easypan.entity.enums.FileStatusEnums;
 import com.easypan.entity.po.FileInfo;
@@ -56,6 +57,8 @@ public class QuickUploadService {
 
             QueryWrapper qw = QueryWrapper.create()
                     .where(FILE_INFO.FILE_ID.eq(cachedFileId))
+                    .and(FILE_INFO.USER_ID.eq(userId))
+                    .and(FILE_INFO.TENANT_ID.eq(TenantContextHolder.getTenantId()))
                     .and(FILE_INFO.STATUS.eq(FileStatusEnums.USING.getStatus()));
 
             List<FileInfo> fileList = fileInfoMapper.selectListByQuery(qw);
@@ -69,6 +72,8 @@ public class QuickUploadService {
 
             QueryWrapper qw = QueryWrapper.create()
                     .where(FILE_INFO.FILE_MD5.eq(fileMd5))
+                    .and(FILE_INFO.USER_ID.eq(userId))
+                    .and(FILE_INFO.TENANT_ID.eq(TenantContextHolder.getTenantId()))
                     .and(FILE_INFO.STATUS.eq(FileStatusEnums.USING.getStatus()))
                     .limit(1);
 
@@ -106,6 +111,7 @@ public class QuickUploadService {
 
         newFile.setFileId(StringTools.getRandomString(10));
         newFile.setUserId(userId);
+        newFile.setTenantId(TenantContextHolder.getTenantId());
         newFile.setFileMd5(existingFile.getFileMd5());
         newFile.setFilePid(filePid);
         newFile.setFileName(fileName);

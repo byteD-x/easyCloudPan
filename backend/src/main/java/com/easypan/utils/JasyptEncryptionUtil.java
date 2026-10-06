@@ -38,12 +38,7 @@ public class JasyptEncryptionUtil {
         encryptor.setIvGenerator(new RandomIvGenerator());
 
         String encryptedValue = encryptor.encrypt(valueToEncrypt);
-        String decryptedValue = encryptor.decrypt(encryptedValue);
-
-        System.out.println("Original value: " + valueToEncrypt);
         System.out.println("Encrypted value: " + encryptedValue);
-        System.out.println("Decrypted value: " + decryptedValue);
-        System.out.println();
         System.out.println("Use in properties file: ENC(" + encryptedValue + ")");
     }
 

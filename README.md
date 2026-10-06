@@ -5,7 +5,6 @@
   <img src="https://img.shields.io/badge/Node.js-20%2B-green?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/Spring%20Boot-3.x-6DB33F?style=flat-square" alt="Spring Boot" />
   <img src="https://img.shields.io/badge/Vue-3-42B883?style=flat-square" alt="Vue" />
-  <img src="https://img.shields.io/badge/React-19-149eca?style=flat-square" alt="React" />
   <img src="https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square" alt="License" />
   <img src="https://img.shields.io/badge/Status-活跃开发中-brightgreen?style=flat-square" alt="Status" />
 </p>
@@ -14,7 +13,7 @@ EasyCloudPan 是一款高性能、安全可靠的前后端分离网盘系统，�
 
 ## 🌟 项目亮点
 
-- **双前端支持**：同时提供 Vue 3 和 React 19 前端实现
+- **现代化前端**：Vue 3 + Element Plus，覆盖文件管理、预览、分享、回收站与管理端场景
 - **高性能架构**：基于 Java 21 虚拟线程，支持高并发场景
 - **安全防护**：JWT 双 Token 认证、文件权限控制、配置加密
 - **灵活部署**：本地开发一键启动，Docker 全栈部署支持
@@ -31,7 +30,7 @@ EasyCloudPan 是一款高性能、安全可靠的前后端分离网盘系统，�
 ## 🛠️ 技术栈
 
 - **后端**：Java 21, Spring Boot 3.x, MyBatis-Flex, Flyway
-- **前端**：Vue 3 + Element Plus | React 19 + Ant Design
+- **前端**：Vue 3 + Element Plus
 - **基础设施**：PostgreSQL 15, Redis 7, MinIO
 - **部署**：Docker Compose, PowerShell 脚本
 
@@ -67,27 +66,14 @@ EasyCloudPan 是一款高性能、安全可靠的前后端分离网盘系统，�
 - 后端：`http://localhost:7090/api`
 - MinIO Console：`http://localhost:9001`
 
-### 方式 C：运行新前端（`frontend-react`）
-
-在后端和依赖容器已启动后，单独运行：
-
-```powershell
-cd frontend-react
-npm install
-npm run dev
-```
-
-默认访问地址：
-
-- 新前端：`http://localhost:5176`
-- API 代理：`/api -> http://localhost:7090`
-
 ### 方式 B：Docker 全栈部署
 
 ```powershell
 copy ops\docker\.env.example ops\docker\.env
 .\ops\docker\deploy_docker.ps1
 ```
+
+首次部署前请编辑 `ops\docker\.env`，为 `POSTGRES_PASSWORD`、`REDIS_PASSWORD`、`MINIO_ROOT_PASSWORD`、`JWT_SECRET`、`JASYPT_ENCRYPTOR_PASSWORD` 和 `GRAFANA_ADMIN_PASSWORD` 分别填写独立随机值；可用 `openssl rand -hex 32` 生成。`JWT_SECRET` 至少 32 字节。模板不再提供可直接复用的默认密码，未配置时 Compose 会拒绝启动。
 
 停止服务：
 
@@ -210,21 +196,6 @@ npm config set registry https://registry.npmmirror.com
 - 后端：`http://localhost:7090/api`
 - MinIO Console：`http://localhost:9001`
 
-### 方式 C：运行新前端（`frontend-react`）
-
-在后端和依赖容器已启动后，单独运行：
-
-```powershell
-cd frontend-react
-npm install
-npm run dev
-```
-
-默认访问地址：
-
-- 新前端：`http://localhost:5176`
-- API 代理：`/api -> http://localhost:7090`
-
 ### 方式 B：Docker 全栈部署
 
 ```powershell
@@ -274,7 +245,8 @@ copy ops\docker\.env.example ops\docker\.env
 - `REDIS_PASSWORD`
 - `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_BUCKET`
 - `QQ_APP_ID`, `QQ_APP_KEY`
-- `SPRING_MAIL_PASSWORD`
+- `JASYPT_ENCRYPTOR_PASSWORD`（启动必填，须与加密配置使用同一密钥）
+- `SPRING_MAIL_USERNAME`, `SPRING_MAIL_PASSWORD`
 - `LOG_ROOT_LEVEL`
 - `LOG_FILE_DIR`（默认：`${PROJECT_FOLDER}logs`）
 - `LOG_ARCHIVE_DIR`（默认：`${LOG_FILE_DIR}/archive`）
@@ -287,7 +259,6 @@ copy ops\docker\.env.example ops\docker\.env
 easyCloudPan/
 ├── backend/                    # Spring Boot 后端
 ├── frontend/                   # Vue 前端
-├── frontend-react/             # React 重构前端（新目录，不影响旧前端）
 ├── database/                   # 数据库迁移说明（不存放初始化 SQL）
 ├── docs/                       # 补充文档
 ├── scripts/                    # 运维/校验脚本
@@ -399,15 +370,19 @@ docker compose ps
 - 数据库密码：`POSTGRES_PASSWORD`
 - Redis 密码：`SPRING_DATA_REDIS_PASSWORD`
 - MinIO 密钥：`MINIO_SECRET_KEY`
+- Jasypt 密钥：`JASYPT_ENCRYPTOR_PASSWORD`
 
-#### 启用配置加密
+#### 配置加密
+
+应用启动需要设置 `JASYPT_ENCRYPTOR_PASSWORD`；只有使用 `ENC(...)` 配置密文时才需要执行下面的加密命令。
+
 ```bat
 # 设置加密密钥环境变量
 set JASYPT_ENCRYPTOR_PASSWORD=your_secret_key
 
 # 加密敏感配置
 java -cp jasypt-1.9.3.jar org.jasypt.intf.cli.JasyptPBEStringEncryptionCLI ^
-  input="your_password" password=%JASYPT_ENCRYPTOR_PASSWORD% algorithm=PBEWithMD5AndDES
+  input="your_password" password=%JASYPT_ENCRYPTOR_PASSWORD% algorithm=PBEWITHHMACSHA512ANDAES_256
 ```
 
 

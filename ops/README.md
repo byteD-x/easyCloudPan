@@ -31,6 +31,8 @@
 
 新手推荐使用 `docker-compose.simple.yml` 配合本地开发模式。
 
+两个 Compose 文件都要求显式配置数据库、Redis 和 MinIO 密码；完整栈还要求至少 32 字节的 `JWT_SECRET`。请从 `.env.example` 复制配置模板并为每项生成独立随机值，不要使用固定默认凭据。
+
 ## 监控配置
 
 ### Prometheus 配置

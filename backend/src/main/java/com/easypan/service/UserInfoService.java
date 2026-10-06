@@ -77,6 +77,9 @@ public interface UserInfoService {
      */
     Integer updateUserInfoByUserId(UserInfo bean, String userId);
 
+    /** 使用当前密码编码策略更新用户密码。 */
+    Integer updatePassword(String userId, String rawPassword);
+
     /**
      * 根据UserId删除.
      *

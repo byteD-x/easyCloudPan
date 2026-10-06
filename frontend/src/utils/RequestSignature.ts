@@ -1,4 +1,3 @@
-const SIGNATURE_SECRET = import.meta.env.VITE_SIGNATURE_SECRET || 'easypan-default-secret'
 const SIGNATURE_VERSION = 'v2'
 
 export interface SignatureHeaders {
@@ -10,12 +9,14 @@ export interface SignatureHeaders {
 
 const textEncoder = new TextEncoder()
 let hmacKeyPromise: Promise<CryptoKey> | null = null
+let hmacKeyToken = ''
 
-const getHmacKey = (): Promise<CryptoKey> => {
-  if (!hmacKeyPromise) {
+const getHmacKey = (token: string): Promise<CryptoKey> => {
+  if (!hmacKeyPromise || hmacKeyToken !== token) {
+    hmacKeyToken = token
     hmacKeyPromise = crypto.subtle.importKey(
       'raw',
-      textEncoder.encode(SIGNATURE_SECRET),
+      textEncoder.encode(token),
       { name: 'HMAC', hash: 'SHA-256' },
       false,
       ['sign']
@@ -51,7 +52,9 @@ const normalizePath = (path: string): string => {
 
 const generateNonce = (): string => {
   const timestampPart = Date.now().toString(36)
-  const randomPart = Math.random().toString(36).slice(2, 12)
+  const randomValues = new Uint32Array(3)
+  crypto.getRandomValues(randomValues)
+  const randomPart = Array.from(randomValues, value => value.toString(36).padStart(7, '0')).join('')
   return `${timestampPart}-${randomPart}`
 }
 
@@ -60,12 +63,13 @@ const generateSignature = async (
   nonce: string,
   method: string,
   path: string,
-  body = ''
+  body = '',
+  token: string
 ): Promise<string> => {
   const canonicalPath = normalizePath(path)
   const canonicalMethod = method.toUpperCase()
   const payload = [timestamp, nonce, canonicalMethod, canonicalPath, body].join('&')
-  const key = await getHmacKey()
+  const key = await getHmacKey(token)
   const signed = await crypto.subtle.sign('HMAC', key, textEncoder.encode(payload))
   return bytesToHex(signed)
 }
@@ -73,11 +77,12 @@ const generateSignature = async (
 export const signRequest = async (
   method: string,
   path: string,
-  body = ''
+  body = '',
+  token: string
 ): Promise<SignatureHeaders> => {
   const timestamp = Date.now().toString()
   const nonce = generateNonce()
-  const signature = await generateSignature(timestamp, nonce, method, path, body)
+  const signature = await generateSignature(timestamp, nonce, method, path, body, token)
 
   return {
     'X-Timestamp': timestamp,
@@ -90,4 +95,3 @@ export const signRequest = async (
 export const RequestSignatureConfig = {
   SIGNATURE_VERSION,
 }
-

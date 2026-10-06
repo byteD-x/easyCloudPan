@@ -2,7 +2,7 @@ param(
     [string]$BaseUrl = "http://localhost:7090/api",
     [string]$TestEmail,
     [string]$TestNickname = "TestUser",
-    [string]$TestPassword = "Test123!"
+    [string]$TestPassword
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,7 +19,16 @@ Write-Host "=== EasyCloudPan Email and Registration Verification ===" -Foregroun
 Write-Host ""
 
 if ([string]::IsNullOrWhiteSpace($TestEmail)) {
-    $TestEmail = "2041487752@qq.com"
+    $TestEmail = $env:EASYPAN_EMAIL
+}
+if ([string]::IsNullOrWhiteSpace($TestEmail)) {
+    throw "请通过 -TestEmail 或 EASYPAN_EMAIL 提供测试邮箱"
+}
+if ([string]::IsNullOrWhiteSpace($TestPassword)) {
+    $TestPassword = $env:EASYPAN_TEST_PASSWORD
+}
+if ([string]::IsNullOrWhiteSpace($TestPassword)) {
+    $TestPassword = "Test-" + [guid]::NewGuid().ToString("N").Substring(0, 12) + "Aa1!"
 }
 
 $session = New-EasyPanSession

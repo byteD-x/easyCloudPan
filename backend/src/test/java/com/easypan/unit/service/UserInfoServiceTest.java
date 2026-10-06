@@ -77,6 +77,22 @@ class UserInfoServiceTest {
     }
 
     @Test
+    @DisplayName("修改密码使用密码编码器并失效用户缓存")
+    void testUpdatePassword_UsesPasswordEncoder() {
+        when(passwordEncoder.encode(TEST_PASSWORD)).thenReturn("$2a$10$strong-hash");
+        when(userInfoMapper.updateByQuery(any(UserInfo.class), any(QueryWrapper.class))).thenReturn(1);
+
+        Integer updated = userInfoService.updatePassword(TEST_USER_ID, TEST_PASSWORD);
+
+        assertEquals(1, updated);
+        ArgumentCaptor<UserInfo> userCaptor = ArgumentCaptor.forClass(UserInfo.class);
+        verify(userInfoMapper).updateByQuery(userCaptor.capture(), any(QueryWrapper.class));
+        assertEquals("$2a$10$strong-hash", userCaptor.getValue().getPassword());
+        verify(passwordEncoder).encode(TEST_PASSWORD);
+        verify(redisComponent).deleteUserInfo(TEST_USER_ID);
+    }
+
+    @Test
     @DisplayName("用户注册成功")
     void testRegister_Success() {
         when(userInfoMapper.selectOneByQuery(any(QueryWrapper.class))).thenReturn(null);

@@ -1,5 +1,6 @@
 package com.easypan.config;
 
+import com.easypan.component.JwtTokenProvider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.ServletException;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,7 +27,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
@@ -34,7 +34,7 @@ import static org.mockito.Mockito.when;
 @DisplayName("RequestSignatureConfig 签名与重放防护测试")
 class RequestSignatureConfigTest {
 
-    private static final String SIGNATURE_SECRET = "unit-test-signature-secret";
+    private static final String TEST_JWT = "unit-test-jwt-token";
     private static final String SIGNATURE_VERSION = "v2";
     private static final String NONCE_PREFIX = "easypan:nonce:";
 
@@ -44,21 +44,21 @@ class RequestSignatureConfigTest {
     @Mock
     private ValueOperations<String, String> valueOperations;
 
+    @Mock
+    private JwtTokenProvider jwtTokenProvider;
+
     private final Set<String> nonceCache = ConcurrentHashMap.newKeySet();
     private RequestSignatureConfig filter;
 
     @BeforeEach
     void setUp() {
         filter = new RequestSignatureConfig(redisTemplate, new ObjectMapper());
-        ReflectionTestUtils.setField(filter, "signatureSecret", SIGNATURE_SECRET);
+        ReflectionTestUtils.setField(filter, "jwtTokenProvider", jwtTokenProvider);
+        lenient().when(jwtTokenProvider.validateToken(TEST_JWT)).thenReturn(true);
 
         lenient().when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        lenient().when(redisTemplate.hasKey(anyString()))
-                .thenAnswer(invocation -> nonceCache.contains(invocation.getArgument(0, String.class)));
-        lenient().doAnswer(invocation -> {
-            nonceCache.add(invocation.getArgument(0, String.class));
-            return null;
-        }).when(valueOperations).set(anyString(), anyString(), anyLong(), any(TimeUnit.class));
+        lenient().when(valueOperations.setIfAbsent(anyString(), anyString(), anyLong(), any(TimeUnit.class)))
+                .thenAnswer(invocation -> nonceCache.add(invocation.getArgument(0, String.class)));
     }
 
     @Test
@@ -86,7 +86,25 @@ class RequestSignatureConfigTest {
 
         filter.doFilter(request, response, new MockFilterChain());
 
-        assertEquals(400, response.getStatus());
+        assertEquals(401, response.getStatus());
+    }
+
+    @Test
+    @DisplayName("敏感接口：静态共享密钥签名应拒绝")
+    void shouldRejectStaticSecretWithoutJwt() throws ServletException, IOException {
+        String timestamp = String.valueOf(System.currentTimeMillis());
+        String nonce = "nonce-static-secret";
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/file/delFile");
+        request.addHeader("X-Timestamp", timestamp);
+        request.addHeader("X-Nonce", nonce);
+        request.addHeader("X-Signature", RequestSignatureConfig.generateSignature(
+                timestamp, nonce, "POST", "/api/file/delFile", "", "legacy-static-secret"));
+        request.addHeader("X-Signature-Version", SIGNATURE_VERSION);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertEquals(401, response.getStatus());
     }
 
     @Test
@@ -146,6 +164,7 @@ class RequestSignatureConfigTest {
         request.addHeader("X-Nonce", nonce);
         request.addHeader("X-Signature", "invalid-signature");
         request.addHeader("X-Signature-Version", SIGNATURE_VERSION);
+        request.addHeader("Authorization", "Bearer " + TEST_JWT);
         MockHttpServletResponse response = new MockHttpServletResponse();
 
         filter.doFilter(request, response, new MockFilterChain());
@@ -165,7 +184,7 @@ class RequestSignatureConfigTest {
                 "POST",
                 "/api/file/uploadFile",
                 "",
-                SIGNATURE_SECRET);
+                TEST_JWT);
         request.addHeader("X-Timestamp", timestamp);
         request.addHeader("X-Nonce", nonce);
         request.addHeader("X-Signature", signature);
@@ -189,11 +208,12 @@ class RequestSignatureConfigTest {
                 method,
                 path,
                 "",
-                SIGNATURE_SECRET);
+                TEST_JWT);
         request.addHeader("X-Timestamp", timestamp);
         request.addHeader("X-Nonce", nonce);
         request.addHeader("X-Signature", signature);
         request.addHeader("X-Signature-Version", SIGNATURE_VERSION);
+        request.addHeader("Authorization", "Bearer " + TEST_JWT);
         return request;
     }
 }

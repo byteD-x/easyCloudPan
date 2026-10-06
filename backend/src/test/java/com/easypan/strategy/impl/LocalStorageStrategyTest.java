@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class LocalStorageStrategyTest {
 
@@ -31,5 +32,18 @@ class LocalStorageStrategyTest {
             String value = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
             assertEquals("ok", value);
         }
+    }
+
+    @Test
+    void downloadShouldRejectPathTraversal() throws Exception {
+        Path tempRoot = Files.createTempDirectory("easy-pan-storage");
+        AppConfig appConfig = new AppConfig();
+        appConfig.setProjectFolder(tempRoot.resolve("file").toString());
+
+        LocalStorageStrategy strategy = new LocalStorageStrategy();
+        ReflectionTestUtils.setField(strategy, "appConfig", appConfig);
+
+        assertThrows(com.easypan.exception.BusinessException.class,
+                () -> strategy.download("../outside.txt"));
     }
 }

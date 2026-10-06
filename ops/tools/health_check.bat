@@ -31,12 +31,20 @@ if errorlevel 1 (
 echo.
 
 echo [3/5] 检查 Redis...
-docker exec easypan-redis redis-cli -a password123 ping >nul 2>nul
-if errorlevel 1 (
-    echo [FAIL] Redis 未就绪
+if not defined REDIS_PASSWORD (
+    for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%DOCKER_DIR%\.env") do if "%%A"=="REDIS_PASSWORD" set "REDIS_PASSWORD=%%B"
+)
+if not defined REDIS_PASSWORD (
+    echo [FAIL] REDIS_PASSWORD 未配置
     set "ALL_OK=0"
 ) else (
-    echo [OK] Redis 运行正常
+    docker exec -e REDISCLI_AUTH="%REDIS_PASSWORD%" easypan-redis redis-cli ping >nul 2>nul
+    if errorlevel 1 (
+        echo [FAIL] Redis 未就绪
+        set "ALL_OK=0"
+    ) else (
+        echo [OK] Redis 运行正常
+    )
 )
 echo.
 

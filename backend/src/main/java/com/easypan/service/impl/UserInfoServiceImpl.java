@@ -139,6 +139,13 @@ public class UserInfoServiceImpl implements UserInfoService {
     }
 
     @Override
+    public Integer updatePassword(String userId, String rawPassword) {
+        UserInfo updateInfo = new UserInfo();
+        updateInfo.setPassword(passwordEncoder.encode(rawPassword));
+        return updateUserInfoByUserId(updateInfo, userId);
+    }
+
+    @Override
     public Integer deleteUserInfoByUserId(String userId) {
         return this.userInfoMapper.deleteByQuery(
                 QueryWrapper.create().where(USER_INFO.USER_ID.eq(userId)));

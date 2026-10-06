@@ -28,6 +28,18 @@ for /f "usebackq eol=# tokens=1* delims==" %%A in ("%ENV_FILE%") do (
     set "%%A=%%B"
 )
 
+for %%V in (POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD REDIS_PASSWORD MINIO_ROOT_USER MINIO_ROOT_PASSWORD MINIO_BUCKET JWT_SECRET JASYPT_ENCRYPTOR_PASSWORD) do (
+    if not defined %%V (
+        echo [ERROR] Missing required environment variable: %%V
+        exit /b 1
+    )
+)
+
+if not defined GRAFANA_ADMIN_PASSWORD (
+    for /f "delims=" %%G in ('powershell -NoProfile -Command "[guid]::NewGuid().ToString('N') + 'Aa!'"') do set "GRAFANA_ADMIN_PASSWORD=%%G"
+    echo [WARN] GRAFANA_ADMIN_PASSWORD 未配置，本次会话已生成临时值
+)
+
 REM Map Docker environment variables to Spring Boot properties
 set "SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5433/%POSTGRES_DB%"
 set "SPRING_DATASOURCE_USERNAME=%POSTGRES_USER%"

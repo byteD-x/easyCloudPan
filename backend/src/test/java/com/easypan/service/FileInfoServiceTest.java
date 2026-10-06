@@ -89,6 +89,7 @@ class FileInfoServiceTest {
 
         // Mock DB finding existing file with same MD5
         FileInfo existingFile = new FileInfo();
+        existingFile.setUserId(userId);
         existingFile.setFileMd5(fileMd5);
 
         // Mock Rate Limiter
@@ -112,13 +113,14 @@ class FileInfoServiceTest {
         when(fileInfoMapper.insert(any(FileInfo.class))).thenReturn(1);
 
         // Mock updating user space
-        when(userInfoMapper.updateUserSpace(anyString(), anyLong(), any())).thenReturn(1);
+        when(userInfoMapper.incrementUseSpace(anyString(), anyLong())).thenReturn(1);
 
         UploadResultDto result = fileInfoService.uploadFile(userDto, fileId, file, fileName, "0", fileMd5, 0, 1);
 
         assertNotNull(result);
         assertEquals(UploadStatusEnums.UPLOAD_SECONDS.getCode(), result.getStatus());
         verify(fileInfoMapper, times(1)).insert(any(FileInfo.class));
+        verify(userInfoMapper).incrementUseSpace(eq(userId), eq(100L));
     }
 
     @Test

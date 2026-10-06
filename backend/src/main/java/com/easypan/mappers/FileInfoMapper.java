@@ -21,14 +21,15 @@ public interface FileInfoMapper extends BaseMapper<FileInfo> {
 
     @Insert("<script>"
             + "<foreach collection='list' item='item' separator=';'>"
-            + "INSERT INTO file_info (file_id, user_id, file_md5, file_pid, file_name, file_path, "
+            + "INSERT INTO file_info (file_id, user_id, tenant_id, file_md5, file_pid, file_name, file_path, "
             + "file_size, file_cover, file_category, file_type, folder_type, status, del_flag, "
             + "recovery_time, create_time, last_update_time) "
-            + "VALUES (#{item.fileId}, #{item.userId}, #{item.fileMd5}, #{item.filePid}, "
+            + "VALUES (#{item.fileId}, #{item.userId}, COALESCE(#{item.tenantId}, 'default'), #{item.fileMd5}, #{item.filePid}, "
             + "#{item.fileName}, #{item.filePath}, #{item.fileSize}, #{item.fileCover}, "
             + "#{item.fileCategory}, #{item.fileType}, #{item.folderType}, #{item.status}, "
             + "#{item.delFlag}, #{item.recoveryTime}, #{item.createTime}, #{item.lastUpdateTime}) "
             + "ON CONFLICT (file_id) DO UPDATE SET "
+            + "tenant_id = EXCLUDED.tenant_id, "
             + "file_pid = EXCLUDED.file_pid, file_name = EXCLUDED.file_name, file_path = EXCLUDED.file_path, "
             + "file_size = EXCLUDED.file_size, file_cover = EXCLUDED.file_cover, file_category = EXCLUDED.file_category, "
             + "file_type = EXCLUDED.file_type, folder_type = EXCLUDED.folder_type, status = EXCLUDED.status, "
@@ -40,6 +41,7 @@ public interface FileInfoMapper extends BaseMapper<FileInfo> {
     @Update("UPDATE file_info "
             + "SET status = #{bean.status}, "
             + "file_size = #{bean.fileSize}, "
+            + "file_md5 = COALESCE(#{bean.fileMd5}, file_md5), "
             + "file_cover = #{bean.fileCover}, "
             + "recovery_time = COALESCE(#{bean.recoveryTime}, recovery_time), "
             + "last_update_time = CURRENT_TIMESTAMP "
@@ -80,6 +82,10 @@ public interface FileInfoMapper extends BaseMapper<FileInfo> {
 
     @Select("SELECT COALESCE(SUM(file_size), 0) FROM file_info WHERE user_id = #{userId} AND del_flag != 0")
     Long selectUseSpace(@Param("userId") String userId);
+
+    @Select("SELECT COALESCE(SUM(file_size), 0) FROM file_info "
+            + "WHERE tenant_id = #{tenantId} AND del_flag != 0")
+    Long selectUseSpaceByTenantId(@Param("tenantId") String tenantId);
 
     @Delete("DELETE FROM file_info WHERE user_id = #{userId}")
     void deleteFileByUserId(@Param("userId") String userId);
@@ -150,12 +156,23 @@ public interface FileInfoMapper extends BaseMapper<FileInfo> {
             @Param("cursorId") String cursorId,
             @Param("pageSize") int pageSize);
 
-    @Select("SELECT file_id, file_size, file_path, file_md5, user_id, file_cover "
+    @Select("SELECT file_id, file_size, file_path, file_md5, user_id, tenant_id, file_cover "
             + "FROM file_info "
             + "WHERE file_md5 = #{fileMd5} AND status = #{status} "
             + "LIMIT 1")
     FileInfo selectOneByMd5AndStatus(@Param("fileMd5") String fileMd5,
             @Param("status") Integer status);
+
+    /**
+     * 查询仍被其他元数据记录引用的物理对象数量。
+     */
+    @Select("SELECT COUNT(1) FROM file_info WHERE file_path = #{filePath} OR file_cover = #{filePath}")
+    long countReferencesByStoredPath(@Param("filePath") String filePath);
+
+    /** 查询引用某个物理目录前缀的元数据数量。 */
+    @Select("SELECT COUNT(1) FROM file_info "
+            + "WHERE file_path LIKE #{pathPrefix} || '%' OR file_cover LIKE #{pathPrefix} || '%'")
+    long countReferencesByStoredPathPrefix(@Param("pathPrefix") String pathPrefix);
 
     @Select("SELECT DISTINCT file_md5 FROM file_info WHERE file_md5 IS NOT NULL")
     List<String> selectAllMd5();

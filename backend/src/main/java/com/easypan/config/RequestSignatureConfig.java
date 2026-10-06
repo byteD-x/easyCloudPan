@@ -7,7 +7,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -74,8 +73,8 @@ public class RequestSignatureConfig extends OncePerRequestFilter {
     private final RedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
 
-    @Value("${security.signature.secret:easypan-default-secret}")
-    private String signatureSecret;
+    @jakarta.annotation.Resource
+    private com.easypan.component.JwtTokenProvider jwtTokenProvider;
 
     public RequestSignatureConfig(RedisTemplate<String, String> redisTemplate, ObjectMapper objectMapper) {
         this.redisTemplate = redisTemplate;
@@ -109,7 +108,7 @@ public class RequestSignatureConfig extends OncePerRequestFilter {
 
         if (!hasSignatureHeaders) {
             if (requiresSignature(requestPath, request.getMethod())) {
-                sendErrorResponse(response, HttpServletResponse.SC_BAD_REQUEST, "Missing signature headers");
+                sendErrorResponse(response, HttpServletResponse.SC_UNAUTHORIZED, "Missing signature headers");
                 return;
             }
             filterChain.doFilter(request, response);
@@ -128,9 +127,10 @@ public class RequestSignatureConfig extends OncePerRequestFilter {
             return;
         }
 
-        if (!validateNonce(nonce)) {
-            logger.warn("Request nonce already used: path={}, nonce={}", requestPath, nonce);
-            sendErrorResponse(response, HttpServletResponse.SC_BAD_REQUEST, "Duplicate request");
+        String signingSecret = resolveSigningSecret(request);
+        if (!StringUtils.hasText(signingSecret)) {
+            // 签名必须绑定已验证的 JWT，避免浏览器/仓库中的静态共享密钥被伪造。
+            sendErrorResponse(response, HttpServletResponse.SC_UNAUTHORIZED, "Authentication required");
             return;
         }
 
@@ -140,15 +140,35 @@ public class RequestSignatureConfig extends OncePerRequestFilter {
                 request.getMethod(),
                 requestPath,
                 "",
-                signatureSecret);
+                signingSecret);
         if (!constantTimeEquals(signature, expectedSignature)) {
             logger.warn("Invalid request signature: path={}", requestPath);
             sendErrorResponse(response, HttpServletResponse.SC_UNAUTHORIZED, "Invalid signature");
             return;
         }
 
-        cacheNonce(nonce);
+        if (!claimNonce(nonce)) {
+            logger.warn("Request nonce already used or nonce store unavailable: path={}, nonce={}", requestPath, nonce);
+            sendErrorResponse(response, HttpServletResponse.SC_BAD_REQUEST, "Duplicate request");
+            return;
+        }
         filterChain.doFilter(request, response);
+    }
+
+    private String resolveSigningSecret(HttpServletRequest request) {
+        String authorization = request.getHeader("Authorization");
+        if (StringUtils.hasText(authorization)) {
+            String token = authorization.startsWith("Bearer ")
+                    ? authorization.substring(7)
+                    : authorization;
+            if (StringUtils.hasText(token) && jwtTokenProvider != null
+                    && jwtTokenProvider.validateToken(token)) {
+                // JWT 已是客户端持有的短期凭证，用它作为本次 HMAC 密钥，避免仓库/前端存在共享静态密钥。
+                return token;
+            }
+            return null;
+        }
+        return null;
     }
 
     private boolean shouldSkipSignature(String path) {
@@ -172,14 +192,16 @@ public class RequestSignatureConfig extends OncePerRequestFilter {
         }
     }
 
-    private boolean validateNonce(String nonce) {
+    /** 原子占用 nonce，避免 check-then-set 竞态让同一签名并发穿透。 */
+    private boolean claimNonce(String nonce) {
         String key = NONCE_CACHE_PREFIX + nonce;
-        return !Boolean.TRUE.equals(redisTemplate.hasKey(key));
-    }
-
-    private void cacheNonce(String nonce) {
-        String key = NONCE_CACHE_PREFIX + nonce;
-        redisTemplate.opsForValue().set(key, "1", SIGNATURE_VALIDITY_MS, TimeUnit.MILLISECONDS);
+        try {
+            return Boolean.TRUE.equals(redisTemplate.opsForValue()
+                    .setIfAbsent(key, "1", SIGNATURE_VALIDITY_MS, TimeUnit.MILLISECONDS));
+        } catch (RuntimeException e) {
+            // 重放存储不可用时拒绝请求，不能降级为无保护放行。
+            return false;
+        }
     }
 
     private boolean constantTimeEquals(String provided, String expected) {

@@ -34,6 +34,11 @@ public class FileInfo implements Serializable {
     private String userId;
 
     /**
+     * 租户 ID，必须与上传/转存请求的租户上下文一致。
+     */
+    private String tenantId;
+
+    /**
      * md5值，第一次上传记录.
      */
     private String fileMd5;

@@ -43,7 +43,9 @@ $requiredEnv = @(
     "REDIS_PASSWORD",
     "MINIO_ROOT_USER",
     "MINIO_ROOT_PASSWORD",
-    "MINIO_BUCKET"
+    "MINIO_BUCKET",
+    "JWT_SECRET",
+    "JASYPT_ENCRYPTOR_PASSWORD"
 )
 $missingEnv = @()
 foreach ($name in $requiredEnv) {

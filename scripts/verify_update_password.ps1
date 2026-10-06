@@ -72,7 +72,10 @@ try {
 
     Write-Output ""
     Write-Output "[2/4] Update password..."
-    $newPassword = "NewP@ss123"
+    $newPassword = $env:EASYPAN_NEW_PASSWORD
+    if ([string]::IsNullOrWhiteSpace($newPassword)) {
+        $newPassword = "Test-" + [guid]::NewGuid().ToString("N").Substring(0, 12) + "Aa1!"
+    }
     $updateBody = "password=$newPassword"
     $updateResp = $client.PostAsync("$BaseUrl/updatePassword", 
         (New-Object System.Net.Http.StringContent($updateBody, [System.Text.Encoding]::UTF8, "application/x-www-form-urlencoded"))).Result

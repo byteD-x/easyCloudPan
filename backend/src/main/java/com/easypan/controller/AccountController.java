@@ -462,9 +462,7 @@ public class AccountController extends ABaseController {
     public ResponseVO<Void> updatePassword(HttpSession session,
             @VerifyParam(required = true, regex = VerifyRegexEnum.PASSWORD, min = 8, max = 32) String password) {
         SessionWebUserDto sessionWebUserDto = getUserInfoFromSession(session);
-        UserInfo userInfo = new UserInfo();
-        userInfo.setPassword(StringTools.encodeByMD5(password));
-        userInfoService.updateUserInfoByUserId(userInfo, sessionWebUserDto.getUserId());
+        userInfoService.updatePassword(sessionWebUserDto.getUserId(), password);
         return getSuccessResponseVO(null);
     }
 

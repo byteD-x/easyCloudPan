@@ -1,5 +1,6 @@
 import request from '@/utils/Request'
 import type { ResponseVO, PaginationResultVO } from '@/types'
+import type { AxiosProgressEvent } from 'axios'
 import {
   adaptFileInfo,
   adaptFileInfoList,
@@ -142,7 +143,7 @@ export function getDownloadUrl(code: string): string {
 
 export async function uploadFile(
   params: UploadFileParams,
-  onProgress?: (event: ProgressEvent) => void
+  onProgress?: (event: AxiosProgressEvent) => void
 ): Promise<UploadResultDto | null> {
   const result = (await request({
     url: api.uploadFile,
@@ -166,7 +167,7 @@ export interface UploadFileWithErrorResult {
 
 export async function uploadFileWithError(
   params: UploadFileParams,
-  onProgress?: (event: ProgressEvent) => void
+  onProgress?: (event: AxiosProgressEvent) => void
 ): Promise<UploadFileWithErrorResult> {
   let errorMsg: string | undefined
   const result = (await request({

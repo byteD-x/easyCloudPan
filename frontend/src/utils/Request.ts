@@ -5,6 +5,7 @@
   type InternalAxiosRequestConfig,
 } from 'axios'
 import { ElLoading } from 'element-plus'
+import { AxiosHeaders } from 'axios'
 import router from '@/router'
 import Message from '../utils/Message'
 import { useUserInfoStore } from '@/stores/userInfoStore'
@@ -37,7 +38,9 @@ const signatureSkipPathPrefixes = [
 // 请求去重与取消控制
 const pendingRequests = new Map<string, AbortController>()
 
-type RequestParams = Record<string, unknown> | FormData | URLSearchParams | null | undefined
+// API 参数对象通常由具体接口类型定义，不要求额外的索引签名。
+// 使用 object 可以保留接口参数的强类型，同时兼容 FormData/URLSearchParams。
+type RequestParams = object | FormData | URLSearchParams | null | undefined
 
 interface ApiResponse<T = unknown> {
   code: number
@@ -295,11 +298,13 @@ instance.interceptors.request.use(
 
     const normalizedPath = normalizeRequestPath(config.url || '')
     const shouldSign = customConfig.requireSignature !== false && !shouldSkipSignature(normalizedPath)
-    if (shouldSign) {
+    // 签名密钥绑定当前 JWT。公共接口不发送静态签名，避免浏览器内置共享密钥被伪造。
+    if (shouldSign && token) {
       const signatureHeaders = await signRequest(
         (config.method || 'POST').toUpperCase(),
         normalizedPath,
-        resolveSignatureBody(config.data)
+        resolveSignatureBody(config.data),
+        token
       )
       Object.assign(config.headers, signatureHeaders)
     }
@@ -510,16 +515,16 @@ const request = (config: RequestOptions) => {
     responseType = responseTypeJson,
   } = config
 
-  const headers: Record<string, string> = {
+  const headers = new AxiosHeaders({
     'X-Requested-with': 'XMLHttpRequest',
-  }
+  })
 
   const postData = buildPostData(params, dataType)
   if (postData.needContentTypeHeader) {
-    headers['Content-Type'] = postData.contentType
+    headers.set('Content-Type', postData.contentType)
   }
 
-  const axiosConfig: CustomAxiosRequestConfig = {
+  const axiosConfig = {
     headers,
     responseType,
     showLoading,
@@ -533,7 +538,7 @@ const request = (config: RequestOptions) => {
     enableRequestDedup: config.enableRequestDedup,
     requireSignature: config.requireSignature,
     tenantId: config.tenantId,
-  }
+  } as CustomAxiosRequestConfig
 
   return instance.post(url, postData.requestData, axiosConfig).catch((error: unknown) => {
     const errorPayload = toErrorPayload(error)
